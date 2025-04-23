@@ -179,3 +179,4 @@ generated_predictions.jsonl
 
 # sbatch logs
 **/sbatch_logs/
+data/finemath.jsonl
