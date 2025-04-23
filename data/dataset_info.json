@@ -184,6 +184,15 @@
       "response": "output"
     }
   },
+  "gsm8k": {
+    "hf_hub_url": "openai/gsm8k",
+    "subset": "main",
+    "split": "test",
+    "columns": {
+      "prompt": "question",
+      "response": "answer"
+    }
+  },
   "firefly": {
     "hf_hub_url": "YeungNLP/firefly-train-1.1M",
     "columns": {
@@ -633,6 +642,12 @@
   },
   "c4_demo": {
     "file_name": "c4_demo.jsonl",
+    "columns": {
+      "prompt": "text"
+    }
+  },
+  "finemath": {
+    "file_name": "finemath.jsonl",
     "columns": {
       "prompt": "text"
     }
