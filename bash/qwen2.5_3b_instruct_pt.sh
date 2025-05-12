@@ -5,7 +5,7 @@
 #SBATCH -p seas_gpu                             # Partition to submit to
 #SBATCH -n 1                                    # XM: num of nodes
 #SBATCH --gres=gpu:nvidia_h100_80gb_hbm3:1      # GPU resources
-#SBATCH --account=brenner_lab               # Account to charge
+#SBATCH --account=konkle_lab               # Account to charge
 #SBATCH --mem-per-cpu=8G
 #SBATCH -o sbatch_logs/%j.out    # File to which STDOUT will be written, %j inserts jobid
 #SBATCH -e sbatch_logs/%j.err    # File to which STDERR will be written, %j inserts jobid
@@ -14,7 +14,9 @@
 
 set -x -e
 source ~/.bashrc
-source ../../envs/llamafac/bin/activate
+module load python
+conda deactivate
+conda activate llamafac
 module load cuda/12.2.0-fasrc01
 echo "PYTHON ENV: $(which python)"
 

@@ -1,7 +1,7 @@
 #! /bin/bash
 #SBATCH --job-name=verl-gsm8k-sft
 #SBATCH -c 16                                    # Number of cores (-c)
-#SBATCH -t 0-04:00                              # Runtime in D-HH:MM, minimum of 10 minutes
+#SBATCH -t 1-00:00                              # Runtime in D-HH:MM, minimum of 10 minutes
 #SBATCH -p seas_gpu                             # Partition to submit to
 #SBATCH -n 1                                    # XM: num of nodes
 #SBATCH --gres=gpu:nvidia_h100_80gb_hbm3:1      # GPU resources
@@ -14,10 +14,15 @@
 
 set -x -e
 source ~/.bashrc
-source ../../envs/llamafac/bin/activate
+# TODO: change to the correct environment
+module load python
+conda deactivate
+conda activate llamafac
 module load cuda/12.2.0-fasrc01
 echo "PYTHON ENV: $(which python)"
 
 cd /n/netscratch/konkle_lab/Everyone/Jingxuan/LLaMA-Factory
 
-llamafactory-cli train examples/train_lora/llama3.2_3b_lora_pretrain.yaml
+export FORCE_TORCHRUN=1
+#llamafactory-cli train examples/train_lora/llama3.2_3b_lora_pretrain.yaml
+llamafactory-cli train examples/train_full/llama3.2_3b_full_pretrain.yaml

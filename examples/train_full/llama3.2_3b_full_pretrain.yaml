@@ -5,9 +5,8 @@ trust_remote_code: true
 ### method
 stage: pt
 do_train: true
-finetuning_type: lora
-lora_rank: 8
-lora_target: all
+finetuning_type: full
+deepspeed: examples/deepspeed/ds_z3_config.json
 
 ### dataset
 dataset: finemath
@@ -18,22 +17,25 @@ preprocessing_num_workers: 16
 dataloader_num_workers: 4
 
 ### output
-output_dir: saves/Llama-3.2-3B/lora/pretrain
+output_dir: saves/Llama-3.2-3B/full/pretrain
 logging_steps: 10
 save_steps: 500
 plot_loss: true
 overwrite_output_dir: true
 save_only_model: false
 report_to: wandb  # choices: [none, wandb, tensorboard, swanlab, mlflow]
-run_name: llama3_finemath_pretrain
+run_name: llama3_finemath_pretrain_full_3
 
 ### train
 per_device_train_batch_size: 1
-gradient_accumulation_steps: 8
-learning_rate: 1.0e-4
+gradient_accumulation_steps: 2
+learning_rate: 5.0e-5
+adam_beta2: 0.95
+weight_decay: 0.01
 num_train_epochs: 1.0
-lr_scheduler_type: cosine
-warmup_ratio: 0.1
+lr_scheduler_type: linear
+warmup_steps: 1000
+max_steps: 60000
 bf16: true
 ddp_timeout: 180000000
 resume_from_checkpoint: null

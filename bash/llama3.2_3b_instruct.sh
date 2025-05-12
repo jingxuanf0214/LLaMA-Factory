@@ -14,7 +14,9 @@
 
 set -x -e
 source ~/.bashrc
-source ../../envs/llamafac/bin/activate
+module load python
+conda deactivate
+conda activate llamafac
 module load cuda/12.2.0-fasrc01
 echo "PYTHON ENV: $(which python)"
 
