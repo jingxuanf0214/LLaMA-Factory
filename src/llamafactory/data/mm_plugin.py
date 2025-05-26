@@ -21,7 +21,7 @@ import re
 from copy import deepcopy
 from dataclasses import dataclass
 from io import BytesIO
-from typing import TYPE_CHECKING, Any, BinaryIO, Literal, Optional, TypedDict, Union
+from typing import TYPE_CHECKING, BinaryIO, Literal, Optional, TypedDict, Union
 
 import numpy as np
 import torch
@@ -84,20 +84,6 @@ if TYPE_CHECKING:
 
         def _get_number_of_features(self, orig_height: int, orig_width: int, height: int, width: int) -> int:
             pass
-
-
-def _concatenate_list(input_list: list[Any]) -> Union[list[Any], "NDArray", "torch.Tensor"]:
-    r"""Concatenate a list of lists, numpy arrays or torch tensors.
-
-    Returns:
-        a list of numpy arrays or torch tensors.
-    """
-    if isinstance(input_list[0], list):
-        return [item for sublist in input_list for item in sublist]
-    elif isinstance(input_list[0], np.ndarray):
-        return np.concatenate(input_list, axis=0)
-    elif isinstance(input_list[0], torch.Tensor):
-        return torch.cat(input_list, dim=0)
 
 
 def _get_paligemma_token_type_ids(imglens: list[int], seqlens: list[int], processor: "MMProcessor") -> list[list[int]]:
@@ -219,7 +205,7 @@ class MMPluginMixin:
         if total_frames == 0:  # infinite video
             return np.linspace(0, video_maxlen - 1, video_maxlen).astype(np.int32)
 
-        sample_frames = math.floor(float(video_stream.duration * video_stream.time_base) * video_fps)
+        sample_frames = max(1, math.floor(float(video_stream.duration * video_stream.time_base) * video_fps))
         sample_frames = min(total_frames, video_maxlen, sample_frames)
         return np.linspace(0, total_frames - 1, sample_frames).astype(np.int32)
 
@@ -496,8 +482,15 @@ class InternVLPlugin(BasePlugin):
         **kwargs,
     ) -> dict[str, "torch.Tensor"]:
         image_processor: BaseImageProcessor = getattr(processor, "image_processor")
-        attributes = ["crop_to_patches", "min_patches", "max_patches"]  # need for image processor
-        image_kwargs = {attr: getattr(image_processor, attr, None) for attr in attributes}
+        image_processor_kwargs = {}
+        if getattr(processor, "crop_to_patches", False):
+            image_processor_kwargs.update(
+                {
+                    "crop_to_patches": True,
+                    "max_patches": 12,
+                    "min_patches": 1,
+                }
+            )
 
         mm_inputs = {}
         image_video_patches = []
@@ -520,7 +513,7 @@ class InternVLPlugin(BasePlugin):
 
         if len(images) != 0:
             images = make_flat_list_of_images(images)
-            image_inputs = image_processor(images=images, **image_kwargs)
+            image_inputs = image_processor(images=images, return_tensors="pt", **image_processor_kwargs)
             image_num_patches = image_inputs.pop("num_patches")
             image_pixel_values = image_inputs.pop("pixel_values")
             image_num_patches_indices = np.cumsum(image_num_patches)
@@ -529,8 +522,8 @@ class InternVLPlugin(BasePlugin):
             videos = make_batched_videos(videos)
             num_frames_per_video = [len(video) for video in videos]
             patch_indices = np.cumsum(num_frames_per_video)
-            image_kwargs["crop_to_patches"] = False
-            video_inputs = image_processor(images=videos, **image_kwargs)
+            image_processor_kwargs["crop_to_patches"] = False
+            video_inputs = image_processor(images=videos, return_tensors="pt", **image_processor_kwargs)
             video_num_patches = video_inputs.pop("num_patches")
             video_pixel_values = video_inputs.pop("pixel_values")
             video_num_patches_indices = np.cumsum(video_num_patches)
@@ -543,18 +536,16 @@ class InternVLPlugin(BasePlugin):
                 image_video_patches.append(image_pixel_values[start_index:end_index])
 
         if len(videos) != 0 and video_pixel_values is not None:
+            patch_indices_with_prefix = [0] + list(patch_indices)
             for i in range(len(videos)):
-                current_patch_index = patch_indices[i - 1] if i > 0 else 0
-                end_patch_index = patch_indices[i]
-                start_index = video_num_patches_indices[current_patch_index] if i > 0 else 0
+                current_patch_index = patch_indices_with_prefix[i]
+                end_patch_index = patch_indices_with_prefix[i + 1]
+                start_index = video_num_patches_indices[current_patch_index - 1] if i > 0 else 0
                 end_index = video_num_patches_indices[end_patch_index - 1]
                 image_video_patches.append(video_pixel_values[start_index:end_index])
 
         if len(images) != 0 or len(videos) != 0:
-            pixel_values_list = _concatenate_list(image_video_patches)
-            mm_inputs["pixel_values"] = torch.stack(
-                [torch.tensor(patch_ndarray) for patch_ndarray in pixel_values_list]
-            )
+            mm_inputs["pixel_values"] = torch.cat(image_video_patches, dim=0)
 
         if len(images) != 0:
             mm_inputs.update({"image_num_patches": image_num_patches})
@@ -588,7 +579,7 @@ class InternVLPlugin(BasePlugin):
         for message in messages:
             content = message["content"]
             while IMAGE_PLACEHOLDER in content:
-                if num_image_tokens >= len(image_pixel_patch_list):
+                if num_image_tokens >= len(images):
                     raise ValueError(f"`len(images)` is less than the number of {IMAGE_PLACEHOLDER} tokens.")
 
                 content = content.replace(
@@ -599,7 +590,7 @@ class InternVLPlugin(BasePlugin):
                 num_image_tokens += 1
 
             while VIDEO_PLACEHOLDER in content:
-                if num_video_tokens >= len(video_patch_indices):
+                if num_video_tokens >= len(videos):
                     raise ValueError(f"`len(videos)` is less than the number of {VIDEO_PLACEHOLDER} tokens.")
 
                 current_patch_index = video_patch_indices[num_video_tokens - 1] if num_video_tokens > 0 else 0
@@ -657,7 +648,7 @@ class KimiVLPlugin(BasePlugin):
         for message in messages:
             content = message["content"]
             while IMAGE_PLACEHOLDER in content:
-                if num_image_tokens >= len(image_grid_hws):
+                if num_image_tokens >= len(images):
                     raise ValueError(f"`len(images)` is less than the number of {IMAGE_PLACEHOLDER} tokens.")
 
                 image_seqlen = image_grid_hws[num_image_tokens].prod() // merge_length if self.expand_mm_tokens else 1
@@ -710,6 +701,9 @@ class Llama4Plugin(BasePlugin):
                 for local_image_index, split_part in enumerate(prompt_splits):
                     new_content.append(split_part)
                     if local_image_index < placeholder_count:
+                        if num_image_tokens >= len(images):
+                            raise ValueError(f"`len(images)` is less than the number of {IMAGE_PLACEHOLDER} tokens.")
+
                         tokens_for_this_image = processor._prompt_split_image(
                             aspect_ratios[num_image_tokens], num_patches_per_chunk
                         )
@@ -774,6 +768,9 @@ class LlavaPlugin(BasePlugin):
         for message in messages:
             content = message["content"]
             while IMAGE_PLACEHOLDER in content:
+                if num_image_tokens >= len(images):
+                    raise ValueError(f"`len(images)` is less than the number of {IMAGE_PLACEHOLDER} tokens.")
+
                 content = content.replace(IMAGE_PLACEHOLDER, "{{image}}" * image_seqlen, 1)
                 num_image_tokens += 1
 
@@ -808,6 +805,9 @@ class LlavaNextPlugin(BasePlugin):
         for message in messages:
             content = message["content"]
             while IMAGE_PLACEHOLDER in content:
+                if num_image_tokens >= len(images):
+                    raise ValueError(f"`len(images)` is less than the number of {IMAGE_PLACEHOLDER} tokens.")
+
                 if self.expand_mm_tokens:
                     orig_height, orig_width = next(image_sizes)
                     image_seqlen = processor._get_number_of_features(orig_height, orig_width, height, width)
@@ -850,6 +850,9 @@ class LlavaNextVideoPlugin(BasePlugin):
         for message in messages:
             content = message["content"]
             while IMAGE_PLACEHOLDER in content:
+                if num_image_tokens >= len(images):
+                    raise ValueError(f"`len(images)` is less than the number of {IMAGE_PLACEHOLDER} tokens.")
+
                 if self.expand_mm_tokens:
                     orig_height, orig_width = next(image_sizes)
                     image_seqlen = processor._get_number_of_features(orig_height, orig_width, height, width)
@@ -876,6 +879,9 @@ class LlavaNextVideoPlugin(BasePlugin):
         for message in messages:
             content = message["content"]
             while VIDEO_PLACEHOLDER in content:
+                if num_video_tokens >= len(videos):
+                    raise ValueError(f"`len(videos)` is less than the number of {VIDEO_PLACEHOLDER} tokens.")
+
                 content = content.replace(VIDEO_PLACEHOLDER, "{{video}}" * video_seqlen, 1)
                 num_video_tokens += 1
 
@@ -921,15 +927,24 @@ class MiniCPMVPlugin(BasePlugin):
         for i, message in enumerate(messages):
             content = message["content"]
             while IMAGE_PLACEHOLDER in content:
+                if num_image_tokens >= len(images):
+                    raise ValueError(f"`len(images)` is less than the number of {IMAGE_PLACEHOLDER} tokens.")
+
                 content = content.replace(IMAGE_PLACEHOLDER, "{{image}}", 1)
                 num_image_tokens += 1
 
             while VIDEO_PLACEHOLDER in content:
+                if num_video_tokens >= len(videos):
+                    raise ValueError(f"`len(videos)` is less than the number of {VIDEO_PLACEHOLDER} tokens.")
+
                 video_seqlen = len(mm_inputs["pixel_values"][num_video_tokens]) if self.expand_mm_tokens else 1
                 content = content.replace(VIDEO_PLACEHOLDER, "{{image}}" * video_seqlen, 1)
                 num_video_tokens += 1
 
             while AUDIO_PLACEHOLDER in content:
+                if num_audio_tokens >= len(audios):
+                    raise ValueError(f"`len(audios)` is less than the number of {AUDIO_PLACEHOLDER} tokens.")
+
                 content = content.replace(AUDIO_PLACEHOLDER, "{{audio}}", 1)
                 num_audio_tokens += 1
 
@@ -1283,6 +1298,9 @@ class PixtralPlugin(BasePlugin):
         for message in messages:
             content = message["content"]
             while IMAGE_PLACEHOLDER in content:
+                if num_image_tokens >= len(images):
+                    raise ValueError(f"`len(images)` is less than the number of {IMAGE_PLACEHOLDER} tokens.")
+
                 if self.expand_mm_tokens:
                     height, width = next(image_sizes)
                     num_height_tokens = height // processor.patch_size
@@ -1350,6 +1368,9 @@ class Qwen2AudioPlugin(BasePlugin):
         for message in messages:
             content = message["content"]
             while AUDIO_PLACEHOLDER in content:
+                if num_audio_tokens >= len(audios):
+                    raise ValueError(f"`len(audios)` is less than the number of {AUDIO_PLACEHOLDER} tokens.")
+
                 if self.expand_mm_tokens:
                     audio_length = audio_lengths.pop(0)
                     input_length = (audio_length - 1) // 2 + 1
@@ -1490,7 +1511,7 @@ class Qwen2VLPlugin(BasePlugin):
         for message in messages:
             content = message["content"]
             while IMAGE_PLACEHOLDER in content:
-                if num_image_tokens >= len(image_grid_thw):
+                if num_image_tokens >= len(images):
                     raise ValueError(f"`len(images)` is less than the number of {IMAGE_PLACEHOLDER} tokens.")
 
                 image_seqlen = image_grid_thw[num_image_tokens].prod() // merge_length if self.expand_mm_tokens else 1
@@ -1500,7 +1521,7 @@ class Qwen2VLPlugin(BasePlugin):
                 num_image_tokens += 1
 
             while VIDEO_PLACEHOLDER in content:
-                if num_video_tokens >= len(video_grid_thw):
+                if num_video_tokens >= len(videos):
                     raise ValueError(f"`len(videos)` is less than the number of {VIDEO_PLACEHOLDER} tokens.")
 
                 video_seqlen = video_grid_thw[num_video_tokens].prod() // merge_length if self.expand_mm_tokens else 1
@@ -1630,7 +1651,7 @@ class Qwen2OmniPlugin(Qwen2VLPlugin):
             content = message["content"]
             # separate with audio-video
             while IMAGE_PLACEHOLDER in content:
-                if num_image_tokens >= len(image_grid_thw):
+                if num_image_tokens >= len(images):
                     raise ValueError(f"`len(images)` is less than the number of {IMAGE_PLACEHOLDER} tokens.")
 
                 image_token_replace_length = image_grid_thw[num_image_tokens].prod() // merge_length
@@ -1643,7 +1664,7 @@ class Qwen2OmniPlugin(Qwen2VLPlugin):
 
             if not use_audio_in_video:
                 while AUDIO_PLACEHOLDER in content:
-                    if num_audio_tokens >= len(audio_lengths):
+                    if num_audio_tokens >= len(audios):
                         raise ValueError(f"`len(audios)` is less than the number of {AUDIO_PLACEHOLDER} tokens.")
 
                     audio_token_replace_length = audio_lengths[num_audio_tokens]
@@ -1656,7 +1677,7 @@ class Qwen2OmniPlugin(Qwen2VLPlugin):
 
                 # TODO handle video_input and use_audio_in_video
                 while VIDEO_PLACEHOLDER in content:
-                    if num_video_tokens >= len(video_grid_thw):
+                    if num_video_tokens >= len(videos):
                         raise ValueError(f"`len(videos)` is less than the number of {VIDEO_PLACEHOLDER} tokens.")
 
                     video_replace_length = video_grid_thw[num_video_tokens].prod() // merge_length
@@ -1667,7 +1688,7 @@ class Qwen2OmniPlugin(Qwen2VLPlugin):
 
             else:  # if use the audio of video # deal video token and audio token togather
                 while VIDEO_PLACEHOLDER in content:
-                    if num_video_tokens >= len(video_grid_thw):
+                    if num_video_tokens >= len(videos):
                         raise ValueError(f"`len(videos)` is less than the number of {VIDEO_PLACEHOLDER} tokens.")
 
                     audio_t_index = torch.arange(audio_lengths[num_audio_tokens])
@@ -1756,10 +1777,16 @@ class VideoLlavaPlugin(BasePlugin):
         for message in messages:
             content = message["content"]
             while IMAGE_PLACEHOLDER in content:
+                if num_image_tokens >= len(images):
+                    raise ValueError(f"`len(images)` is less than the number of {IMAGE_PLACEHOLDER} tokens.")
+
                 content = content.replace(IMAGE_PLACEHOLDER, "{{image}}" * image_seqlen, 1)
                 num_image_tokens += 1
 
             while VIDEO_PLACEHOLDER in content:
+                if num_video_tokens >= len(videos):
+                    raise ValueError(f"`len(videos)` is less than the number of {VIDEO_PLACEHOLDER} tokens.")
+
                 content = content.replace(VIDEO_PLACEHOLDER, "{{video}}" * video_seqlen, 1)
                 num_video_tokens += 1
 
