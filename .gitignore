@@ -176,6 +176,7 @@ output/
 wandb/
 swanlog/
 generated_predictions.jsonl
+predictions_score.json
 
 # sbatch logs
 **/sbatch_logs/
