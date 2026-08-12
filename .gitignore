@@ -176,3 +176,6 @@ output/
 wandb/
 swanlog/
 generated_predictions.jsonl
+
+# large local dataset files (never commit to git, use HF hub / cluster storage instead)
+data/finemath_*.json
