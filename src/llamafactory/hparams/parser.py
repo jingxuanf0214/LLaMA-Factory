@@ -351,7 +351,26 @@ def get_train_args(args: Optional[Union[dict[str, Any], list[str]]] = None) -> _
         logger.info_rank0("Set `ddp_find_unused_parameters` to False in DDP training since LoRA is enabled.")
         training_args.ddp_find_unused_parameters = False
 
-    if finetuning_args.stage in ["rm", "ppo"] and finetuning_args.finetuning_type in ["full", "freeze"]:
+    # Upstream disables resume for rm/ppo + full/freeze. The reason is that the
+    # value head is a separate module saved to value_head.bin, which HuggingFace's
+    # own checkpoint path does not restore -- resuming would silently reinstate a
+    # randomly initialised head on top of trained weights.
+    #
+    # That does not apply under DeepSpeed. DeepSpeed checkpoints the whole wrapped
+    # module plus optimizer and scheduler state into global_stepN/, so the value
+    # head round-trips with everything else. This fork's ds_z3_config.json also
+    # declares an explicit AdamW optimizer and WarmupLR scheduler instead of
+    # "auto", so that state is DeepSpeed-owned and restorable rather than
+    # reconstructed.
+    #
+    # Without this, a preempted RM run restarts from step 0 while still reporting
+    # success -- the warning below is not an error, so a ~26h job silently throws
+    # away everything it had done.
+    if (
+        finetuning_args.stage in ["rm", "ppo"]
+        and finetuning_args.finetuning_type in ["full", "freeze"]
+        and training_args.deepspeed is None
+    ):
         can_resume_from_checkpoint = False
         if training_args.resume_from_checkpoint is not None:
             logger.warning_rank0("Cannot resume from checkpoint in current stage.")
