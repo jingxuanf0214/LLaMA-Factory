@@ -208,8 +208,39 @@ def patch_valuehead_model(model: "AutoModelForCausalLMWithValueHead") -> None:
         if isinstance(self.pretrained_model, PeftModel):
             self.pretrained_model.create_or_update_model_card(output_dir)
 
+    def load_state_dict(
+        self: "AutoModelForCausalLMWithValueHead", state_dict: dict[str, "torch.Tensor"], strict: bool = True, **kwargs
+    ):
+        r"""Accept the key layout that this wrapper's own state_dict() produces.
+
+        trl's AutoModelForCausalLMWithValueHead overrides state_dict() to emit the
+        decoder WITHOUT the "pretrained_model." prefix (so a checkpoint loads as a
+        plain CausalLM later), but does NOT override load_state_dict, which
+        inherits nn.Module's and expects the prefix. The wrapper can therefore
+        save a checkpoint it cannot read back:
+
+          RuntimeError: Error(s) in loading state_dict for AutoModelForCausalLMWithValueHead
+            Missing key(s):    "pretrained_model.model.embed_tokens.weight", ...
+            Unexpected key(s): "model.embed_tokens.weight", ...
+
+        DeepSpeed hits this on resume, because deepspeed_load_checkpoint() calls
+        module.load_state_dict(..., strict=True) with the dict saved from
+        state_dict(). Restore the symmetry: re-add the prefix to non-v_head keys
+        when the incoming dict is in the stripped layout. Dicts that already carry
+        the prefix, and v_head-only dicts (loader.py loads those with strict=False),
+        are passed through untouched.
+        """
+        if state_dict and not any(key.startswith("pretrained_model.") for key in state_dict):
+            state_dict = {
+                key if key.startswith("v_head.") else f"pretrained_model.{key}": value
+                for key, value in state_dict.items()
+            }
+
+        return torch.nn.Module.load_state_dict(self, state_dict, strict=strict, **kwargs)
+
     ignore_modules = [name for name, _ in model.named_parameters() if "pretrained_model" in name]
     setattr(model, "_keys_to_ignore_on_save", ignore_modules)
+    setattr(model, "load_state_dict", MethodType(load_state_dict, model))
     setattr(model, "tie_weights", MethodType(tie_weights, model))
     setattr(model, "get_input_embeddings", MethodType(get_input_embeddings, model))
     setattr(model, "get_output_embeddings", MethodType(get_output_embeddings, model))
