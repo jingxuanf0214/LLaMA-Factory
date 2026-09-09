@@ -154,6 +154,17 @@ class RLHFArguments:
         default=0.5,
         metadata={"help": "The target reward margin term in SimPO loss."},
     )
+    rm_centering_coeff: float = field(
+        default=0.0,
+        metadata={
+            "help": (
+                "Score-centering coefficient c for reward-model training: "
+                "loss = BT + c * mean(chosen_score^2 + rejected_score^2). "
+                "Bradley-Terry only constrains score differences, so the absolute scale can drift; "
+                "0 (default) keeps the plain BT loss."
+            )
+        },
+    )
     ppo_buffer_size: int = field(
         default=1,
         metadata={"help": "The number of mini-batches to make experience buffer in a PPO optimization step."},

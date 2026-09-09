@@ -104,6 +104,12 @@ class PairwiseTrainer(Trainer):
         chosen_scores, rejected_scores = chosen_scores.squeeze(), rejected_scores.squeeze()
 
         loss = -torch.nn.functional.logsigmoid(chosen_scores.float() - rejected_scores.float()).mean()
+        # Optional score-centering regularizer (quadratic penalty on raw chosen and rejected
+        # scores). With one rejected per chosen this is the per-pair form of
+        # E[s(p,r_i)^2 + mean_j s(p,r_j)^2]; the BT term is unchanged when the coefficient is 0.
+        centering_coeff = getattr(self.finetuning_args, "rm_centering_coeff", 0.0)
+        if centering_coeff > 0:
+            loss = loss + centering_coeff * (chosen_scores.float() ** 2 + rejected_scores.float() ** 2).mean()
         if return_outputs:
             return loss, (loss, chosen_scores, rejected_scores)
         else:
